@@ -91,7 +91,7 @@ const USER_SCRIPT_CODE = USER_SCRIPT_META + `
         }
     };
 
-    const PROCESSED_KEY='yungas...s_v2';
+    const PROCESSED_KEY='yungas_processed_tickets_v2';
     const LOCK_PREFIX = 'yungas_lock_ticket_';
     const pendingTimers = new Map();
     let currentOperator = null;
