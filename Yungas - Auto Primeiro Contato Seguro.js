@@ -1,72 +1,14 @@
-// Endpoint de metadados: o Tampermonkey consulta aqui para checar versão (leve, poucos bytes)
-    if (url.pathname === '/firstMsg.meta.js') {
-      return new Response(USER_SCRIPT_META, {
-        headers: {
-          'Content-Type': 'text/javascript; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache, no-store, must-revalidate'
-        }
-      });
-    }
-
-    // Endpoint de download/instalação: entrega o código completo
-    if (url.pathname === '/firstMsg.user.js' || url.pathname === '/install') {
-      return new Response(USER_SCRIPT_CODE, {
-        headers: {
-          'Content-Type': 'text/javascript; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache, no-store, must-revalidate'
-        }
-      });
-    }
-
-    // Página inicial simples com instruções e botão de instalação
-    return new Response(`
-      <!DOCTYPE html>
-      <html lang="pt-BR">
-      <head>
-        <meta charset="utf-8">
-        <title>Yungas Auto-Reply Bot</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #0f172a; color: #f8fafc; margin: 0; }
-          .card { background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); text-align: center; max-width: 480px; }
-          h1 { margin-top: 0; font-size: 1.5rem; color: #38bdf8; }
-          p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
-          .btn { display: inline-block; background: #0284c7; color: white; padding: 0.8rem 1.8rem; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 1rem; transition: background 0.2s; }
-          .btn:hover { background: #0369a1; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>🤖 Yungas - Auto Primeiro Contato</h1>
-          <p>Instalação do script oficial para resposta rápida de chamados no Yungas.</p>
-          <a class="btn" href="/firstMsg.user.js">Instalar no Tampermonkey</a>
-        </div>
-      </body>
-      </html>
-    `, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' }
-    });
-
-// =========================================================================
-// 1. APENAS OS METADADOS (O que o Tampermonkey lê para saber se mudou de versão)
-// =========================================================================
-const USER_SCRIPT_META = `// ==UserScript==
+// ==UserScript==
 // @name         Yungas - Auto Primeiro Contato Seguro
 // @namespace    https://app.yungas.com.br/
 // @version      2.3.0
 // @description  Envio automático de primeiro contato individual por operador (Seg-Sex 08h-18h | Sáb 08h-12h)
 // @match        https://app.yungas.com.br/*
-// @updateURL    https://raw.githubusercontent.com/Mayhemvc/Yungas-Bot/main/firstMsg.user.js
-// @downloadURL  https://raw.githubusercontent.com/Mayhemvc/Yungas-Bot/main/firstMsg.user.js
+// @updateURL    https://yungas-bot.brunoa2ccount.workers.dev/firstMsg.meta.js
+// @downloadURL  https://yungas-bot.brunoa2ccount.workers.dev/firstMsg.user.js
 // @grant        none
 // ==/UserScript==
-`;
 
-// =========================================================================
-// 2. O CÓDIGO COMPLETO (Seu script pronto com fuso horário do Brasil blindado)
-// =========================================================================
-const USER_SCRIPT_CODE = USER_SCRIPT_META + `
 (function () {
     'use strict';
 
@@ -273,4 +215,3 @@ const USER_SCRIPT_CODE = USER_SCRIPT_META + `
         setTimeout(scanTickets, 2000);
     });
 })();
-`;
