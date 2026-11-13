@@ -1,9 +1,4 @@
-// Cloudflare Worker para hospedar e auto-atualizar o Userscript do Yungas
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // Endpoint de metadados: o Tampermonkey consulta aqui para checar versão (leve, poucos bytes)
+// Endpoint de metadados: o Tampermonkey consulta aqui para checar versão (leve, poucos bytes)
     if (url.pathname === '/firstMsg.meta.js') {
       return new Response(USER_SCRIPT_META, {
         headers: {
@@ -52,8 +47,6 @@ export default {
     `, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' }
     });
-  }
-};
 
 // =========================================================================
 // 1. APENAS OS METADADOS (O que o Tampermonkey lê para saber se mudou de versão)
