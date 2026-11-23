@@ -24,7 +24,7 @@
 
         DEFAULT_MESSAGE: "Olá! Recebemos sua solicitação e já estamos iniciando a análise. Em instantes retorno com mais detalhes.",
 
-        INACTIVITY_MARKER_ID: null, // Preencher com o ID numérico do marcador
+        INACTIVITY_MARKER_ID: 415, // Preencher com o ID numérico do marcador
         INACTIVITY_INTERVAL_MINUTES: 15,
         INACTIVITY_MAX_ATTEMPTS: 4,
 
@@ -39,7 +39,7 @@
         }
     };
 
-    const PROCESSED_KEY='yungas_processed_tickets_v2';
+    const PROCESSED_KEY = 'yungas_processed_tickets_v2';
     const FOLLOWUP_TRACKER_KEY = 'yungas_inactivity_v1';
     const LOCK_PREFIX = 'yungas_lock_ticket_';
     const pendingTimers = new Map();
@@ -178,7 +178,7 @@
                 console.log('[Yungas-Bot] ✅ Resposta de primeiro contato enviada no ticket #' + ticketId);
                 markAsProcessed(ticketId);
 
-                await markUnread(ticketId);
+                await markUnread(ticketId); // Marca como nao lido
             } else {
                 console.error('[Yungas-Bot] ❌ Falha HTTP ' + res.status + ' no ticket #' + ticketId);
                 releaseLock(ticketId);
@@ -205,24 +205,37 @@
         } catch (err) {
             console.error('[Yungas-Bot] Erro ao marcar o ticket #' + ticketId + ' como não lido:', err);
         }
-    } 
+    }
 
     /**
-     * Rota descoberta via Burp Suite: DELETE /api/v2/ticket/{id}/marks
+     * Rota de remoção de marcadores: DELETE /api/v2/ticket/{id}/marks
+     * Requer no body: { "marker_id": ID }
      */
-    async function removeTicketMarks(ticketId) {
+    async function removeTicketMarks(ticketId, markerId = CONFIG.INACTIVITY_MARKER_ID) {
+        if (!markerId) {
+            console.warn(`[Yungas-Bot] ⚠️ Tentativa de remover marcador do ticket #${ticketId} sem marker_id.`);
+            return false;
+        }
+
         try {
             const res = await fetch(`/api/v2/ticket/${ticketId}/marks`, {
                 method: 'DELETE',
-                headers: { 'Accept': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json' 
+                },
+                body: JSON.stringify({ marker_id: Number(markerId) }),
                 credentials: 'include'
             });
             if (res.ok) {
-                console.log(`[Yungas-Bot] Marcador removido com sucesso do ticket #${ticketId}.`);
+                console.log(`[Yungas-Bot] 🏷️ Marcador #${markerId} removido com sucesso do ticket #${ticketId}.`);
                 return true;
+            } else {
+                const errorData = await res.text();
+                console.error(`[Yungas-Bot] ❌ Erro ${res.status} ao remover marcador #${markerId} do ticket #${ticketId}. Resposta da API:`, errorData);
             }
         } catch (err) {
-            console.error(`[Yungas-Bot] Erro ao remover marcador do ticket #${ticketId}:`, err);
+            console.error(`[Yungas-Bot] Erro de rede ao remover marcador do ticket #${ticketId}:`, err);
         }
         return false;
     }
@@ -282,7 +295,7 @@
         } finally {
             releaseLock(ticketId);
         }
-    } 
+    }
 
     async function scanTickets() {
         if (!isWithinWorkingHours()) return;
@@ -319,7 +332,7 @@
                 const createdAt = parseApiDate(t.created_on);
                 const ageMinutes = (now - createdAt) / (1000 * 60); // Gera o tempo do ticket em minutos
 
-                const isUnanswered = t.first_replied_at === null && !t.solved; 
+                const isUnanswered = t.first_replied_at === null && !t.solved;
                 const isRecent = ageMinutes <= CONFIG.MAX_TICKET_AGE_MINUTES;
 
                 if (isUnanswered && isRecent && !processed.has(tid) && !pendingTimers.has(tid)) {
@@ -333,6 +346,7 @@
                 }
 
                 // 2. INATIVIDADE POR MARCADOR (15 MIN / MAX 4)
+                // t.markers.some() volta o primeiro resultado Early true
                 if (CONFIG.INACTIVITY_MARKER_ID) {
                     const hasMarker = Array.isArray(t.markers) && t.markers.some(m => Number(m.id) === Number(CONFIG.INACTIVITY_MARKER_ID));
 
@@ -370,14 +384,36 @@
                 }
             }
 
-            // 3. LIMPEZA AUTOMATICA DE TICKET FINALIZADO PELO OPERADOR
-            for (const trackedIdStr of Object.keys(followupTracker)) {
-                const trackedId = Number(trackedIdStr);
-                if (!activeTicketIds.has(trackedId)) {
-                    console.log(`[Yungas-Bot] Ticket #${trackedId} finalizado pelo operador. Higienizando marcador e estado.`);
-                    await removeTicketMarks(trackedId);
-                    delete followupTracker[trackedId];
-                    saveFollowupTracker(followupTracker);
+            // ========================================================
+            // 3. LIMPEZA SEGURA DE TICKET FINALIZADO PELO OPERADOR
+            // Safe contra falso positivo de paginação (pagina 2+) e oscilações de rede voltando []
+            // ========================================================
+            if (ticketList.length > 0) {
+                for (const trackedIdStr of Object.keys(followupTracker)) {
+                    const trackedId = Number(trackedIdStr);
+                    if (!activeTicketIds.has(trackedId)) {
+                        // Verifica o ticket sem carregar as mensagens
+                        try {
+                            const detailRes = await fetch(`/api/v2/ticket/${trackedId}/detail/?messages=false`, {
+                                headers: { 'Accept': 'application/json' },
+                                credentials: 'include'
+                            });
+                            if (detailRes.ok) {
+                                const detail = await detailRes.json();
+                                const isSolved = detail.solved === true || detail.status === 'closed';
+                                const isTransferred = Number(detail.assignee_id || detail.assignee?.id) !== operator.id;
+
+                                if (isSolved || isTransferred) {
+                                    console.log(`[Yungas-Bot] 🧹 Ticket #${trackedId} confirmado como finalizado/transferido. Higienizando marcador.`);
+                                    await removeTicketMarks(trackedId);
+                                    delete followupTracker[trackedId];
+                                    saveFollowupTracker(followupTracker);
+                                }
+                            }
+                        } catch (err) {
+                            console.warn(`[Yungas-Bot] Falha ao verificar status pontual do ticket #${trackedId}:`, err);
+                        }
+                    }
                 }
             }
 
