@@ -24,11 +24,16 @@
 
         DEFAULT_MESSAGE: "Olá! Recebemos sua solicitação e já estamos iniciando a análise. Em instantes retorno com mais detalhes.",
 
-        INACTIVITY_MARKER_ID: 415, // Preencher com o ID numérico do marcador
-        INACTIVITY_INTERVAL_MINUTES: 15,
-        INACTIVITY_MAX_ATTEMPTS: 4,
+        // ========================================================
+        // NOVO: Configurações da Régua de Inatividade por Marcador
+        // ========================================================
+        INACTIVITY_MARKER_ID: 3504, // ID oficial do marcador no Yungas
+        INACTIVITY_INTERVAL_MINUTES: 15, // 15 minutos entre os lembretes (1 a 4)
+        INACTIVITY_MAX_ATTEMPTS: 4, // 4 lembretes de inatividade
+        INACTIVITY_FINAL_DELAY_MINUTES: 1, // 1 minuto após o 4º disparo para enviar o encerramento
 
         INACTIVITY_MESSAGE: "Oi! Tudo bem por aí? Nossa conversa ficou em silêncio, só queria checar se você ainda precisa de ajuda.",
+        INACTIVITY_CLOSING_MESSAGE: "Olá! Seu atendimento foi finalizado por inatividade. Qualquer dúvida pode entrar em contato novamente. Seu feedback é muito importante para que possamos melhorar cada vez mais. Tenha um ótimo dia!😊",
 
         SCHEDULE: {
             ENABLED: true,
@@ -44,6 +49,8 @@
     const LOCK_PREFIX = 'yungas_lock_ticket_';
     const pendingTimers = new Map();
     let currentOperator = null;
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     /**
      * Validação com Fuso Horário Oficial de Brasília (America/Sao_Paulo)
@@ -220,9 +227,9 @@
         try {
             const res = await fetch(`/api/v2/ticket/${ticketId}/marks`, {
                 method: 'DELETE',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
-                    'Accept': 'application/json' 
+                    'Accept': 'application/json'
                 },
                 body: JSON.stringify({ marker_id: Number(markerId) }),
                 credentials: 'include'
@@ -241,12 +248,10 @@
     }
 
     /**
-     * Dispara a mensagem de inatividade e gerencia o ciclo do marcador
-     * - Checa se o operador está na tela do ticket
-     * - Dispara POST /helpdesk/new-msg com mensagem padrão
-     * - Incrementa contagem e atualiza timestamp no storage
-     * - Marca como não lido para atenção do operador
-     * - Ao atingir o 4º envio (CONFIG.INACTIVITY_MAX_ATTEMPTS), remove o marcador
+     * Dispara as mensagens da régua de inatividade:
+     * - Disparos 1 a 4: Mensagem de lembrete (CONFIG.INACTIVITY_MESSAGE)
+     * - Disparo Final (após o 4º disparo sem resposta): Mensagem de encerramento por inatividade (CONFIG.INACTIVITY_CLOSING_MESSAGE),
+     *   remoção do marcador #3504 e marcação de não lido.
      */
     async function sendInactivityReminder(ticketId, currentAttempts) {
         if (window.location.href.includes(String(ticketId))) {
@@ -255,9 +260,12 @@
             return;
         }
 
+        const isClosing = currentAttempts >= CONFIG.INACTIVITY_MAX_ATTEMPTS;
+        const msgText = isClosing ? CONFIG.INACTIVITY_CLOSING_MESSAGE : CONFIG.INACTIVITY_MESSAGE;
+
         const formData = new FormData();
         formData.append('ticketId', String(ticketId));
-        formData.append('msgText', `<p>${CONFIG.INACTIVITY_MESSAGE}</p>`);
+        formData.append('msgText', `<p>${msgText}</p>`);
 
         try {
             const res = await fetch('/helpdesk/new-msg', {
@@ -268,30 +276,27 @@
 
             if (res.ok) {
                 const nextAttempts = currentAttempts + 1;
-                console.log(`[Yungas-Bot] Lembrete de inatividade (${nextAttempts}/${CONFIG.INACTIVITY_MAX_ATTEMPTS}) enviado no ticket #${ticketId}.`);
-
                 const tracker = getFollowupTracker();
-                tracker[ticketId] = {
-                    attempts: nextAttempts,
-                    lastSentAt: Date.now()
-                };
-                saveFollowupTracker(tracker);
 
-                // Marca como não lido para alertar o operador
-                await markUnread(ticketId);
-
-                // Se completou o 4 disparo, remove o marcador e encerra o ciclo de inatividade
-                if (nextAttempts >= CONFIG.INACTIVITY_MAX_ATTEMPTS) {
-                    console.log(`[Yungas-Bot] 🛑 Limite de ${CONFIG.INACTIVITY_MAX_ATTEMPTS} envios atingido no ticket #${ticketId}. Removendo marcador.`);
+                if (!isClosing) {
+                    console.log(`[Yungas-Bot] ⏰ Lembrete de inatividade (${nextAttempts}/${CONFIG.INACTIVITY_MAX_ATTEMPTS}) enviado no ticket #${ticketId}.`);
+                    tracker[ticketId] = {
+                        attempts: nextAttempts,
+                        lastSentAt: Date.now()
+                    };
+                    saveFollowupTracker(tracker);
+                } else {
+                    console.log(`[Yungas-Bot] 🛑 Mensagem de encerramento por inatividade enviada no ticket #${ticketId}. Removendo marcador #${CONFIG.INACTIVITY_MARKER_ID}.`);
                     await removeTicketMarks(ticketId);
+                    await markUnread(ticketId);
                     delete tracker[ticketId];
                     saveFollowupTracker(tracker);
                 }
             } else {
-                console.error(`[Yungas-Bot] ❌ Erro HTTP ${res.status} no lembrete de inatividade do ticket #${ticketId}`);
+                console.error(`[Yungas-Bot] ❌ Erro HTTP ${res.status} no envio de inatividade do ticket #${ticketId}`);
             }
         } catch (err) {
-            console.error(`[Yungas-Bot] ❌ Erro de rede no lembrete do ticket #${ticketId}:`, err);
+            console.error(`[Yungas-Bot] ❌ Erro de rede no envio de inatividade do ticket #${ticketId}:`, err);
         } finally {
             releaseLock(ticketId);
         }
@@ -321,6 +326,7 @@
 
             for (const t of ticketList) {
                 const tid = Number(t.id);
+                const tname = t.ticket_id;
                 activeTicketIds.add(tid);
 
                 const respId = Number(t.assignee_id || t.assignee?.id);
@@ -338,7 +344,7 @@
                 if (isUnanswered && isRecent && !processed.has(tid) && !pendingTimers.has(tid)) {
                     if (acquireLock(tid)) {
                         const delaySec = Math.floor(Math.random() * (CONFIG.MAX_DELAY_SEC - CONFIG.MIN_DELAY_SEC + 1) + CONFIG.MIN_DELAY_SEC);
-                        console.log('[Yungas-Bot] 🎯 Ticket #' + tid + ' para ' + operator.name + '. Disparo em ' + delaySec + 's.');
+                        console.log('[Yungas-Bot] 🎯 Ticket #' + tid + ' / ' + tname + ' para ' + operator.name + '. Disparo em ' + delaySec + 's.');
 
                         const timerId = setTimeout(() => sendFirstContact(tid), delaySec * 1000);
                         pendingTimers.set(tid, timerId);
@@ -353,7 +359,7 @@
                     if (hasMarker) {
                         // A: Cliente respondeu -> Remove marcador e reseta o tracking
                         if (t.franchisor_last_replied === false) {
-                            console.log(`[Yungas-Bot] 💬 Cliente respondeu no ticket #${tid}. Removendo marcador e resetando régua.`);
+                            console.log(`[Yungas-Bot] 💬 Cliente respondeu no ticket #${tid} / ${tname}. Removendo marcador e resetando régua.`);
                             await removeTicketMarks(tid);
                             delete followupTracker[tid];
                             saveFollowupTracker(followupTracker);
@@ -369,9 +375,18 @@
                             const baseTime = (entry.lastSentAt && entry.lastSentAt > lastMsgTime) ? entry.lastSentAt : lastMsgTime;
                             const elapsedMinutes = (now - baseTime) / (1000 * 60);
 
-                            if (elapsedMinutes >= CONFIG.INACTIVITY_INTERVAL_MINUTES && entry.attempts < CONFIG.INACTIVITY_MAX_ATTEMPTS) {
+                            // Intervalo dinâmico: 15 min para lembretes (1 a 4) e apenas 1 min após o 4º para encerrar
+                            const requiredInterval = (entry.attempts >= CONFIG.INACTIVITY_MAX_ATTEMPTS)
+                                ? CONFIG.INACTIVITY_FINAL_DELAY_MINUTES
+                                : CONFIG.INACTIVITY_INTERVAL_MINUTES;
+
+                            if (elapsedMinutes >= requiredInterval && entry.attempts <= CONFIG.INACTIVITY_MAX_ATTEMPTS) {
                                 if (acquireLock(tid)) {
-                                    console.log(`[Yungas-Bot] ⏳ Ticket #${tid} com inatividade de ${Math.round(elapsedMinutes)} min. Disparando lembrete.`);
+                                    if (entry.attempts < CONFIG.INACTIVITY_MAX_ATTEMPTS) {
+                                        console.log(`[Yungas-Bot] ⏳ Ticket #${tid} / ${tname} com inatividade de ${Math.round(elapsedMinutes)} min. Disparando lembrete (${entry.attempts + 1}/${CONFIG.INACTIVITY_MAX_ATTEMPTS}).`);
+                                    } else {
+                                        console.log(`[Yungas-Bot] ⏳ Ticket #${tid} / ${tname} sem retorno após 1 min do ${CONFIG.INACTIVITY_MAX_ATTEMPTS}º lembrete. Enviando encerramento por inatividade.`);
+                                    }
                                     await sendInactivityReminder(tid, entry.attempts);
                                 }
                             }
@@ -384,10 +399,8 @@
                 }
             }
 
-            // ========================================================
             // 3. LIMPEZA SEGURA DE TICKET FINALIZADO PELO OPERADOR
             // Safe contra falso positivo de paginação (pagina 2+) e oscilações de rede voltando []
-            // ========================================================
             if (ticketList.length > 0) {
                 for (const trackedIdStr of Object.keys(followupTracker)) {
                     const trackedId = Number(trackedIdStr);
