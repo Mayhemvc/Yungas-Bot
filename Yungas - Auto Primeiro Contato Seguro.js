@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Yungas - Auto Primeiro Contato Seguro
 // @namespace    https://app.yungas.com.br/
-// @version      2.4.0
-// @description  Envio automático de primeiro contato e régua de inatividade por marcadores (Seg-Sex 08h-18h | Sáb 08h-12h)
+// @version      2.5.0
+// @description  Envio automático de primeiro contato, régua de inatividade por marcadores e badges visuais na tabela (Seg-Sex 08h-18h | Sáb 08h-12h)
 // @match        https://app.yungas.com.br/*
 // @updateURL    https://yungas-bot.brunoa2ccount.workers.dev/firstMsg.meta.js
 // @downloadURL  https://yungas-bot.brunoa2ccount.workers.dev/firstMsg.user.js
@@ -24,9 +24,7 @@
 
         DEFAULT_MESSAGE: "Olá! Recebemos sua solicitação e já estamos iniciando a análise. Em instantes retorno com mais detalhes.",
 
-        // ========================================================
-        // NOVO: Configurações da Régua de Inatividade por Marcador
-        // ========================================================
+        // Configurações da Régua de Inatividade por Marcador
         INACTIVITY_MARKER_ID: 3504, // ID oficial do marcador no Yungas
         INACTIVITY_INTERVAL_MINUTES: 15, // 15 minutos entre os lembretes (1 a 4)
         INACTIVITY_MAX_ATTEMPTS: 4, // 4 lembretes de inatividade
@@ -138,6 +136,132 @@
         localStorage.setItem(FOLLOWUP_TRACKER_KEY, JSON.stringify(tracker));
     }
 
+    // GERENCIAMENTO VISUAL DE RÓTULOS (BADGES NA TABELA)
+    const BADGES_STORAGE_KEY = 'yungas_ticket_badges_v1';
+
+    function getTicketBadges() {
+        try {
+            const raw = localStorage.getItem(BADGES_STORAGE_KEY);
+            if (!raw) return {};
+            const badges = JSON.parse(raw);
+            const now = Date.now();
+            let changed = false;
+            for (const k of Object.keys(badges)) {
+                // Expira badges com mais de 24 horas para manter o storage limpo
+                // 24 x 60 x 60 x 1000
+                if (now - (badges[k].updatedAt || 0) > 86400000) {
+                    delete badges[k];
+                    changed = true;
+                }
+            }
+            if (changed) localStorage.setItem(BADGES_STORAGE_KEY, JSON.stringify(badges));
+            return badges;
+            // Sobrescreve o localstorage com os itens ativos
+        } catch {
+            return {};
+        }
+    }
+
+    function setTicketBadge(ticketCode, label) {
+        if (!ticketCode) return;
+        const badges = getTicketBadges();
+        badges[ticketCode] = { label, updatedAt: Date.now() };
+        localStorage.setItem(BADGES_STORAGE_KEY, JSON.stringify(badges));
+        renderTicketBadges();
+    }
+
+    function clearTicketBadge(ticketCode) {
+        if (!ticketCode) return;
+        const badges = getTicketBadges();
+        if (badges[ticketCode]) {
+            delete badges[ticketCode];
+            localStorage.setItem(BADGES_STORAGE_KEY, JSON.stringify(badges));
+            renderTicketBadges();
+        }
+    }
+
+    /**
+     * Atualiza os elementos visuais do Yungas:
+     * - "Ticket" -> "NOVO" (quando respondido primeiro contato)
+     * - "Ticket" -> "INATIVIDADE - 1", "INATIVIDADE - 2", etc. (lembretes de inatividade)
+     * - "Ticket" -> "FINALIZAR" (mensagem de encerramento enviada)
+     */
+    function renderTicketBadges() {
+        const badges = getTicketBadges();
+        const containers = document.querySelectorAll('.item-code--container, [class*="item-code--container"]'); // A "," seria equivalente a OU, elementos cujo atributo class contenha o texto item-code--container em qualquer posição
+
+        containers.forEach((container) => {
+            // Localiza o span que contém o código do ticket (ex: "24-11-2026-JBQR")
+            const idElem = container.querySelector('.item-code--id span, [class*="item-code--id"] span');
+            if (!idElem) return;
+
+            const code = idElem.textContent.trim();
+            const badge = badges[code]; // Pega a badge do ticket especifico
+            const labelP = container.querySelector('p');
+            if (!labelP) return;
+
+            // Identifica (span) e o wrapper de CSS (--pill-background)
+            const pillSpan = labelP.closest('span') || labelP.parentElement;
+            const pillWrapper = container.querySelector('div[style*="--pill-background"]') || (pillSpan ? pillSpan.closest('div[style*="--pill"]') : null);
+
+            if (badge) {
+                if (labelP.textContent !== badge.label) {
+                    labelP.textContent = badge.label;
+                    labelP.setAttribute('data-yungas-bot', 'true');
+                }
+                labelP.style.fontWeight = 'bold';
+                labelP.style.letterSpacing = '0.5px';
+                labelP.style.backgroundColor = 'transparent'; // Remove qualquer fundo direto no texto
+
+                let bgColor = '';
+                let textColor = '#ffffff';
+
+                if (badge.label === 'NOVO') {
+                    bgColor = '#67E64A';
+                    textColor = '#111827';
+                } else if (badge.label === 'EM ANDAMENTO') {
+                    bgColor = '#2563EB'; // Azul para atendimento em andamento
+                    textColor = '#ffffff';
+                } else if (badge.label.startsWith('INATIVIDADE') || badge.label.startsWith('/INA')) {
+                    bgColor = '#F3F63C';
+                    textColor = '#111827';
+                } else if (badge.label === 'FINALIZAR') {
+                    bgColor = '#3F3CF6';
+                    textColor = '#ffffff';
+                }
+
+                labelP.style.color = textColor;
+
+                // Aplica a cor no background
+                if (pillSpan) {
+                    pillSpan.style.setProperty('background-color', bgColor, 'important');
+                    pillSpan.setAttribute('data-yungas-bot', 'true');
+                }
+                if (pillWrapper) {
+                    pillWrapper.style.setProperty('--pill-background', bgColor);
+                    pillWrapper.style.setProperty('--pill-color', textColor);
+                }
+            } else if (labelP.getAttribute('data-yungas-bot') === 'true') {
+                labelP.textContent = 'Ticket';
+                labelP.style.color = '';
+                labelP.style.backgroundColor = '';
+                labelP.style.borderRadius = '';
+                labelP.style.padding = '';
+                labelP.style.fontWeight = '';
+                labelP.removeAttribute('data-yungas-bot');
+
+                if (pillSpan) {
+                    pillSpan.style.removeProperty('background-color');
+                    pillSpan.removeAttribute('data-yungas-bot');
+                }
+                if (pillWrapper) {
+                    pillWrapper.style.setProperty('--pill-background', 'var(--yungas-red)');
+                    pillWrapper.style.setProperty('--pill-color', 'var(--yungas-white)');
+                }
+            } // Zera os atributos quando o ticket não tiver mais badge
+        });
+    }
+
     function acquireLock(ticketId) {
         const key = LOCK_PREFIX + ticketId;
         const existingLock = localStorage.getItem(key);
@@ -161,7 +285,7 @@
         return Number.isNaN(parsed) ? Date.now() : parsed;
     }
 
-    async function sendFirstContact(ticketId) {
+    async function sendFirstContact(ticketId, ticketCode = '') {
         pendingTimers.delete(ticketId);
 
         if (window.location.href.includes(String(ticketId))) {
@@ -184,7 +308,7 @@
             if (res.ok) {
                 console.log('[Yungas-Bot] ✅ Resposta de primeiro contato enviada no ticket #' + ticketId);
                 markAsProcessed(ticketId);
-
+                if (ticketCode) setTicketBadge(ticketCode, 'NOVO');
                 await markUnread(ticketId); // Marca como nao lido
             } else {
                 console.error('[Yungas-Bot] ❌ Falha HTTP ' + res.status + ' no ticket #' + ticketId);
@@ -253,7 +377,7 @@
      * - Disparo Final (após o 4º disparo sem resposta): Mensagem de encerramento por inatividade (CONFIG.INACTIVITY_CLOSING_MESSAGE),
      *   remoção do marcador #3504 e marcação de não lido.
      */
-    async function sendInactivityReminder(ticketId, currentAttempts) {
+    async function sendInactivityReminder(ticketId, currentAttempts, ticketCode = '') {
         if (window.location.href.includes(String(ticketId))) {
             console.log(`[Yungas-Bot] 🛑 Operador em tela no ticket #${ticketId}. Envio de inatividade suspenso.`);
             releaseLock(ticketId);
@@ -281,16 +405,19 @@
                 if (!isClosing) {
                     console.log(`[Yungas-Bot] ⏰ Lembrete de inatividade (${nextAttempts}/${CONFIG.INACTIVITY_MAX_ATTEMPTS}) enviado no ticket #${ticketId}.`);
                     tracker[ticketId] = {
+                        ticketCode: ticketCode,
                         attempts: nextAttempts,
                         lastSentAt: Date.now()
                     };
                     saveFollowupTracker(tracker);
+                    if (ticketCode) setTicketBadge(ticketCode, `INATIVIDADE - ${nextAttempts}`);
                 } else {
                     console.log(`[Yungas-Bot] 🛑 Mensagem de encerramento por inatividade enviada no ticket #${ticketId}. Removendo marcador #${CONFIG.INACTIVITY_MARKER_ID}.`);
                     await removeTicketMarks(ticketId);
                     await markUnread(ticketId);
                     delete tracker[ticketId];
                     saveFollowupTracker(tracker);
+                    if (ticketCode) setTicketBadge(ticketCode, 'FINALIZAR');
                 }
             } else {
                 console.error(`[Yungas-Bot] ❌ Erro HTTP ${res.status} no envio de inatividade do ticket #${ticketId}`);
@@ -346,7 +473,7 @@
                         const delaySec = Math.floor(Math.random() * (CONFIG.MAX_DELAY_SEC - CONFIG.MIN_DELAY_SEC + 1) + CONFIG.MIN_DELAY_SEC);
                         console.log('[Yungas-Bot] 🎯 Ticket #' + tid + ' / ' + tname + ' para ' + operator.name + '. Disparo em ' + delaySec + 's.');
 
-                        const timerId = setTimeout(() => sendFirstContact(tid), delaySec * 1000);
+                        const timerId = setTimeout(() => sendFirstContact(tid, tname), delaySec * 1000);
                         pendingTimers.set(tid, timerId);
                     }
                 }
@@ -363,13 +490,34 @@
                             await removeTicketMarks(tid);
                             delete followupTracker[tid];
                             saveFollowupTracker(followupTracker);
+                            setTicketBadge(tname, 'EM ANDAMENTO');
                             continue;
                         }
 
                         // B: Ultima mensagem foi do operador -> Avalia intervalo de 15 minutos
                         if (t.franchisor_last_replied === true && !t.solved) {
-                            const entry = followupTracker[tid] || { attempts: 0, lastSentAt: null };
+                            let entry = followupTracker[tid] || { attempts: 0, lastSentAt: null, ticketCode: tname };
                             const lastMsgTime = parseApiDate(t.last_msg_on);
+
+                            // Se o atendente enviou uma nova mensagem manual após o último lembrete do bot, reinicia a régua
+                            if (entry.lastSentAt && lastMsgTime > entry.lastSentAt + 3000) {
+                                console.log(`[Yungas-Bot] 🔄 Nova mensagem do operador detectada no ticket #${tid} / ${tname}. Reiniciando régua.`);
+                                entry.attempts = 0;
+                                entry.lastSentAt = lastMsgTime;
+                                followupTracker[tid] = entry;
+                                saveFollowupTracker(followupTracker);
+                            }
+
+                            // Enquanto não houver disparos de inatividade (attempts === 0), o ticket está EM ANDAMENTO (a menos que já esteja FINALIZAR)!
+                            if (entry.attempts === 0) {
+                                const currentBadges = getTicketBadges();
+                                const currentBadge = currentBadges[tname]?.label;
+                                if (currentBadge !== 'EM ANDAMENTO' && currentBadge !== 'FINALIZAR') {
+                                    setTicketBadge(tname, 'EM ANDAMENTO');
+                                }
+                            } else if (entry.attempts > 0 && entry.attempts < CONFIG.INACTIVITY_MAX_ATTEMPTS) {
+                                setTicketBadge(tname, `INATIVIDADE - ${entry.attempts}`);
+                            }
 
                             // Se o atendente enviou mensagem manual mais recente, recalcula a partir dela
                             const baseTime = (entry.lastSentAt && entry.lastSentAt > lastMsgTime) ? entry.lastSentAt : lastMsgTime;
@@ -387,7 +535,7 @@
                                     } else {
                                         console.log(`[Yungas-Bot] ⏳ Ticket #${tid} / ${tname} sem retorno após 1 min do ${CONFIG.INACTIVITY_MAX_ATTEMPTS}º lembrete. Enviando encerramento por inatividade.`);
                                     }
-                                    await sendInactivityReminder(tid, entry.attempts);
+                                    await sendInactivityReminder(tid, entry.attempts, tname);
                                 }
                             }
                         }
@@ -395,15 +543,54 @@
                         // Se o operador removeu o marcador manualmente no painel, limpa o tracking local
                         delete followupTracker[tid];
                         saveFollowupTracker(followupTracker);
+                        const currentBadges = getTicketBadges();
+                        if (currentBadges[tname]?.label !== 'FINALIZAR') {
+                            setTicketBadge(tname, 'EM ANDAMENTO');
+                        }
                     }
+                }
+
+                // 3. STATUS VISUAL: "EM ANDAMENTO" (Fluxo regular e tickets sem marcador de inatividade)
+                if (!t.solved) {
+                    const firstReplyTime = parseApiDate(t.first_replied_at);
+                    const lastMsgTime = parseApiDate(t.last_msg_on);
+                    const isOperatorFollowup = t.first_replied_at !== null && (lastMsgTime - firstReplyTime > 3000);
+
+                    if (isOperatorFollowup) {
+                        const currentBadges = getTicketBadges();
+                        const currentBadge = currentBadges[tname]?.label;
+
+                        // Se o ticket já foi enviado para FINALIZAR, só sai dele se o cliente responder!
+                        if (currentBadge === 'FINALIZAR') {
+                            if (t.franchisor_last_replied === false) {
+                                console.log(`[Yungas-Bot] 💬 Cliente respondeu no ticket #${tid} / ${tname} após encerramento. Retornando para 'EM ANDAMENTO'.`);
+                                setTicketBadge(tname, 'EM ANDAMENTO');
+                            }
+                            continue;
+                        }
+
+                        const isShowingInactivity = currentBadge && currentBadge.startsWith('INATIVIDADE');
+
+                        if (!isShowingInactivity) {
+                            if (t.franchisor_last_replied === true || currentBadge === 'EM ANDAMENTO') {
+                                if (currentBadge !== 'EM ANDAMENTO') {
+                                    console.log(`[Yungas-Bot] 💬 Atendimento em andamento no ticket #${tid} / ${tname}. Atualizando badge para 'EM ANDAMENTO'.`);
+                                    setTicketBadge(tname, 'EM ANDAMENTO');
+                                }
+                            }
+                        }
+                    }
+                } else if (t.solved) {
+                    clearTicketBadge(tname);
                 }
             }
 
-            // 3. LIMPEZA SEGURA DE TICKET FINALIZADO PELO OPERADOR
+            // 4. LIMPEZA SEGURA DE TICKET FINALIZADO PELO OPERADOR
             // Safe contra falso positivo de paginação (pagina 2+) e oscilações de rede voltando []
             if (ticketList.length > 0) {
                 for (const trackedIdStr of Object.keys(followupTracker)) {
                     const trackedId = Number(trackedIdStr);
+                    const trackedCode = followupTracker[trackedIdStr]?.ticketCode;
                     if (!activeTicketIds.has(trackedId)) {
                         // Verifica o ticket sem carregar as mensagens
                         try {
@@ -421,6 +608,7 @@
                                     await removeTicketMarks(trackedId);
                                     delete followupTracker[trackedId];
                                     saveFollowupTracker(followupTracker);
+                                    clearTicketBadge(detail.ticket_id || trackedCode);
                                 }
                             }
                         } catch (err) {
@@ -435,9 +623,20 @@
         }
     }
 
+    let lastLocation = window.location.href;
     getOperatorProfile().then((op) => {
-        console.log('[Yungas-Bot] Monitor v2.4 ativo para ' + op.name + ' (#' + op.id + ')');
+        console.log('[Yungas-Bot] Monitor v2.5 ativo para ' + op.name + ' (#' + op.id + ')');
         setInterval(scanTickets, CONFIG.POLL_INTERVAL_MS);
+        setInterval(renderTicketBadges, 1000); // Re-renderiza os badges na tela a cada 1s contra re-renders do Svelte
         setTimeout(scanTickets, 2000);
+        setTimeout(renderTicketBadges, 1000);
+
+        // Monitor de navegação: dispara varredura imediatamente em qualquer mudança de tela
+        setInterval(() => {
+            if (window.location.href !== lastLocation) {
+                lastLocation = window.location.href;
+                scanTickets();
+            }
+        }, 800);
     });
 })();
